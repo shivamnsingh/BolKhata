@@ -13,6 +13,9 @@ node_modules/
 # Local data and recordings (use synthetic audio only; do not commit audio)
 *.sqlite3
 *.db
-recordings/
+recordings/*
+!recordings/.gitkeep
 smoke_results/
 exports/
+data/*
+!data/.gitkeep

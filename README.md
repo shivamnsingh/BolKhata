@@ -45,13 +45,40 @@ Run tests:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-The database is created as `bolkhata.sqlite3` and is intentionally ignored by
-Git. Set `BOLKHATA_DB` to use another local path.
+Build the continuous voice component after installing Node.js:
+
+```powershell
+Set-Location voice_component_frontend
+npm ci
+npm run build
+Set-Location ..
+```
+
+The database is the existing root-level `bolkhata.sqlite3`, resolved by
+`bolkhata/config.py` regardless of the launch directory. It is intentionally
+ignored by Git. Set `BOLKHATA_DB` to use another local path.
+
+## Project structure
+
+```text
+app.py                         Streamlit entry point
+bolkhata/                      Application package
+  config.py                    Root paths and environment loading
+  database.py                  SQLite lifecycle and schema
+  ledger.py                    Ledger operations and balances
+  transaction_parser.py       Deterministic transcript parsing
+  prisma_client.py             Server-side Gnani API client
+  voice_component.py           Streamlit component bridge
+  ui/                          Page renderers and styles
+voice_component_frontend/      Browser MediaRecorder component
+scripts/smoke_test_prisma.py   Deliberate live API smoke test
+tests/                         Unit, persistence, threading, and protocol tests
+```
 
 ## Voice flow
 
-1. Open **Voice Entry** and use **Record a transaction** when browser-native
-   `st.audio_input` is available. Upload remains a fallback.
+1. Open **Voice Entry** and click **Start Listening** once. Upload remains a
+   fallback.
 2. Click **Transcribe with Gnani Prisma**. This is the only UI action that
    sends a paid request.
 3. Review or edit the extracted fields.
@@ -96,10 +123,11 @@ Do not use it with real customer data until access control, backups, retention,
 and privacy obligations have been reviewed. Real recordings, `.env`, generated
 results, and the local database are excluded from Git by default.
 
-The Prisma smoke test remains separate for deliberate manual API testing:
+The Prisma smoke test remains separate for deliberate manual API testing and is
+never run by pytest:
 
 ```powershell
-.\.venv\Scripts\python.exe smoke_test_prisma.py recordings\test1.m4a --lang hi-IN,en-IN
+.\.venv\Scripts\python.exe scripts\smoke_test_prisma.py recordings\test1.m4a --lang hi-IN,en-IN
 ```
 
 ## Demo checklist
