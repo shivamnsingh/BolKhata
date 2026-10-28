@@ -2,8 +2,8 @@ from decimal import Decimal
 
 import pytest
 
-from database import connect, connection_scope, database_path
-from ledger import LedgerError, add_transaction, balance_paise, create_customer, dashboard_totals, reverse_transaction, rupees_to_paise
+from bolkhata.database import connect, connection_scope, database_path
+from bolkhata.ledger import LedgerError, add_transaction, balance_paise, create_customer, dashboard_totals, reverse_transaction, rupees_to_paise
 
 
 @pytest.fixture

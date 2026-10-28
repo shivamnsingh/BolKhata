@@ -1,7 +1,7 @@
 import base64
 import json
 
-from voice_component import serialize_event_for_test
+from bolkhata.voice_component import serialize_event_for_test
 
 
 def test_voice_event_protocol_preserves_event_id_and_audio():

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from prisma_client import PrismaError, transcribe
+from bolkhata.prisma_client import PrismaError, transcribe
 
 
 class FakeResponse:
@@ -22,7 +22,7 @@ def test_invalid_api_response_is_safe(monkeypatch, tmp_path: Path):
         _ = (_args, _kwargs)
         return FakeResponse(401, {"success": False, "error": {"message": "invalid key"}})
 
-    monkeypatch.setattr("prisma_client.requests.post", fake_post)
+    monkeypatch.setattr("bolkhata.prisma_client.requests.post", fake_post)
     with pytest.raises(PrismaError, match="invalid key"):
         transcribe(audio, api_key="not-printed", base_url="https://example.test")
 
@@ -34,6 +34,6 @@ def test_malformed_success_response_is_rejected(monkeypatch, tmp_path: Path):
         _ = (_args, _kwargs)
         return FakeResponse(200, {"success": True})
 
-    monkeypatch.setattr("prisma_client.requests.post", successful_post)
+    monkeypatch.setattr("bolkhata.prisma_client.requests.post", successful_post)
     with pytest.raises(PrismaError, match="no transcript"):
         transcribe(audio, api_key="not-printed", base_url="https://example.test")

@@ -1,0 +1,1 @@
+"""BolKhata Trust application package."""

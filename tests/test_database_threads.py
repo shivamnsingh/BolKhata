@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 
-from database import connection_scope
-from ledger import add_transaction, balance_paise, create_customer
+from bolkhata.database import connection_scope
+from bolkhata.ledger import add_transaction, balance_paise, create_customer
 
 
 def test_each_thread_uses_its_own_connection(tmp_path):

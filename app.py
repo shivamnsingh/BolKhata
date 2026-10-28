@@ -5,10 +5,10 @@ from decimal import Decimal
 from pathlib import Path
 
 import streamlit as st
-from dotenv import load_dotenv
 
-from database import connection_scope, database_path
-from ledger import (
+from bolkhata.config import DATABASE_PATH
+from bolkhata.database import connection_scope
+from bolkhata.ledger import (
     LedgerError,
     add_transaction,
     balance_paise,
@@ -20,15 +20,13 @@ from ledger import (
     list_transactions,
     reverse_transaction,
 )
-from prisma_client import PrismaError, transcribe
-from transaction_parser import ParseError, parse_transaction
-from voice_component import continuous_voice
-
-load_dotenv()
+from bolkhata.prisma_client import PrismaError, transcribe
+from bolkhata.transaction_parser import ParseError, parse_transaction
+from bolkhata.voice_component import continuous_voice
 st.set_page_config(page_title="BolKhata Trust", page_icon="₹", layout="wide")
 
 
-DB_PATH = database_path()
+DB_PATH = DATABASE_PATH
 
 
 def style() -> None:

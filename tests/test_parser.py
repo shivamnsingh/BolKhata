@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from transaction_parser import ParseError, parse_transaction
+from bolkhata.transaction_parser import ParseError, parse_transaction
 
 
 def test_parses_hindi_credit():
