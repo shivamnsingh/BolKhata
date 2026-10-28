@@ -8,8 +8,14 @@ and type before anything is written to the ledger.
 ## What is working
 
 - SQLite ledger with customer balances stored as integer paise.
+- Thread-safe Streamlit database lifecycle: no live SQLite connection is cached
+  across reruns; each operation gets a short-lived connection with rollback and
+  cleanup.
 - Hindi numeric and amount-word parsing, including credit and repayment examples.
 - Gnani Prisma v3 transcription through the documented `X-API-Key-ID` header.
+- A local browser component that keeps the microphone open, detects silence
+  boundaries, queues utterances in order, and pauses delivery until each
+  transaction is confirmed or rejected.
 - Confirmation-before-save flow in Streamlit.
 - Searchable customers and transactions.
 - Reversal records for corrections; the original row is never silently deleted.
@@ -44,11 +50,22 @@ Git. Set `BOLKHATA_DB` to use another local path.
 
 ## Voice flow
 
-1. Open **Voice Entry** and upload a short recording.
+1. Open **Voice Entry** and use **Record a transaction** when browser-native
+   `st.audio_input` is available. Upload remains a fallback.
 2. Click **Transcribe with Gnani Prisma**. This is the only UI action that
    sends a paid request.
 3. Review or edit the extracted fields.
 4. Click **Confirm and save**.
+
+The continuous component runs in the browser while the tab remains open. It
+uses `MediaRecorder` and local RMS silence detection (0.7–10 second segments,
+approximately 0.9 seconds of silence). Completed segments are sent one at a
+time to Python; later segments stay queued until the current transaction is
+confirmed or rejected. The backend alone calls Prisma, so the API key never
+reaches browser JavaScript. Chrome/Edge are recommended; browsers without
+`getUserMedia` or `MediaRecorder` receive an explicit unsupported-browser
+state. The manual upload path remains available, including WEBM files produced
+by browser MediaRecorder.
 
 Supported examples:
 

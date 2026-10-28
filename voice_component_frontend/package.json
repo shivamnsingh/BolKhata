@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "streamlit-component-lib": "^2.0.0"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}

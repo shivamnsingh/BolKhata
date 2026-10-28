@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from database import connect
+from database import connect, connection_scope, database_path
 from ledger import LedgerError, add_transaction, balance_paise, create_customer, dashboard_totals, reverse_transaction, rupees_to_paise
 
 
@@ -43,6 +43,20 @@ def test_invalid_amounts_are_rejected(db):
         add_transaction(db, customer.id, 0, "credit")
     with pytest.raises(LedgerError):
         add_transaction(db, customer.id, -1, "credit")
+
+
+def test_database_path_is_absolute_and_stable(tmp_path):
+    assert database_path(tmp_path / "ledger.sqlite3").is_absolute()
+
+
+def test_connection_scope_closes_connection_on_error(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    with pytest.raises(RuntimeError):
+        with connection_scope(path) as connection:
+            connection.execute("INSERT INTO customers (name) VALUES (?)", ("Rollback",))
+            raise RuntimeError("forced failure")
+    with connection_scope(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM customers").fetchone()[0] == 0
 
 
 def test_paise_conversion_rounds_to_two_decimal_places():

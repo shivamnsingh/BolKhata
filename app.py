@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import tempfile
 from decimal import Decimal
 from pathlib import Path
@@ -8,7 +7,7 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
-from database import connect
+from database import connection_scope, database_path
 from ledger import (
     LedgerError,
     add_transaction,
@@ -23,17 +22,13 @@ from ledger import (
 )
 from prisma_client import PrismaError, transcribe
 from transaction_parser import ParseError, parse_transaction
+from voice_component import continuous_voice
 
 load_dotenv()
 st.set_page_config(page_title="BolKhata Trust", page_icon="₹", layout="wide")
 
 
-@st.cache_resource
-def get_connection():
-    return connect(os.environ.get("BOLKHATA_DB", "bolkhata.sqlite3"))
-
-
-db = get_connection()
+DB_PATH = database_path()
 
 
 def style() -> None:
@@ -59,7 +54,9 @@ def metric(label: str, value: str) -> None:
 def dashboard() -> None:
     st.title("BolKhata Trust")
     st.caption("Voice makes recording fast. Confirmation makes it safer.")
-    totals = dashboard_totals(db)
+    with connection_scope(DB_PATH) as db:
+        totals = dashboard_totals(db)
+        rows = list_transactions(db)[:8]
     outstanding = totals["credits"] - totals["repayments"]
     cols = st.columns(3)
     with cols[0]:
@@ -70,7 +67,6 @@ def dashboard() -> None:
         metric("Customers", str(totals["customers"]))
     st.markdown('<div class="trust-note">Positive balance means the customer owes the shop. Every saved entry remains in the ledger and corrections create a visible reversal record.</div>', unsafe_allow_html=True)
     st.subheader("Recent transactions")
-    rows = list_transactions(db)[:8]
     if not rows:
         st.info("No transactions yet. Open Voice Entry or add a customer to get started.")
     for row in rows:
@@ -80,18 +76,49 @@ def dashboard() -> None:
 
 def voice_entry() -> None:
     st.title("Voice entry")
-    st.write("Upload a short recording, review the extracted details, and save only after confirmation.")
-    audio = st.file_uploader("Audio recording", type=["wav", "mp3", "ogg", "flac", "aac", "m4a"])
-    language = st.text_input("Language code", "hi-IN,en-IN", help="Examples: hi-IN,en-IN or mr-IN")
-    if audio and st.button("Transcribe with Gnani Prisma", type="primary"):
-        suffix = Path(audio.name).suffix.lower()
+    st.write("Start once, speak naturally, and review each completed utterance before saving.")
+    st.subheader("Continuous listening")
+    if "voice_ack_event_id" not in st.session_state:
+        st.session_state["voice_ack_event_id"] = None
+    event = continuous_voice(
+        ack_event_id=st.session_state.get("voice_ack_event_id"),
+        key="bolkhata-continuous-voice",
+    )
+    if event and event["event_id"] != st.session_state.get("voice_last_event_id"):
+        st.session_state["voice_last_event_id"] = event["event_id"]
+        suffix = ".webm" if "webm" in event["mime_type"] else ".ogg"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(audio.getbuffer())
+            tmp.write(event["audio_bytes"])
+            temporary_path = tmp.name
+        try:
+            with st.spinner("Processing utterance..."):
+                result = transcribe(temporary_path, language_code=st.session_state.get("voice_language", "hi-IN,en-IN"))
+            st.session_state["voice_transcript"] = result["transcript"]
+            st.session_state["voice_pending_event_id"] = event["event_id"]
+            st.session_state["voice_status"] = "Awaiting confirmation"
+        except PrismaError as exc:
+            st.session_state["voice_status"] = "Error"
+            st.session_state["voice_ack_event_id"] = event["event_id"]
+            st.error(str(exc))
+        finally:
+            Path(temporary_path).unlink(missing_ok=True)
+        st.rerun()
+    st.caption("The browser detects silence, sends only completed utterances, and keeps listening after each confirmation. Keep this browser tab open.")
+    st.subheader("Fallback: upload an audio file")
+    audio = st.file_uploader("Audio recording", type=["wav", "mp3", "ogg", "flac", "aac", "m4a", "webm"])
+    language = st.text_input("Language code", "hi-IN,en-IN", help="Examples: hi-IN,en-IN or mr-IN", key="voice_language")
+    upload_requested = bool(audio and st.button("Transcribe uploaded file with Gnani Prisma", type="primary"))
+    selected_audio = audio if upload_requested else None
+    if selected_audio:
+        suffix = Path(getattr(selected_audio, "name", "recording.wav")).suffix.lower() or ".wav"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(selected_audio.getbuffer())
             temporary_path = tmp.name
         try:
             with st.spinner("Transcribing..."):
                 result = transcribe(temporary_path, language_code=language)
             st.session_state["voice_transcript"] = result["transcript"]
+            st.session_state["voice_pending_event_id"] = None
             st.session_state.pop("voice_parse_error", None)
         except PrismaError as exc:
             st.error(str(exc))
@@ -100,6 +127,8 @@ def voice_entry() -> None:
     transcript = st.session_state.get("voice_transcript", "")
     if not transcript:
         return
+    status = st.session_state.get("voice_status", "Awaiting confirmation")
+    st.info(f"Status: {status}")
     st.info(f"Transcript: {transcript}")
     try:
         parsed = parse_transaction(transcript)
@@ -111,13 +140,28 @@ def voice_entry() -> None:
         amount = st.number_input("Amount (₹)", min_value=0.01, value=float(parsed.amount) if parsed else 1.0, step=1.0)
         kind = st.selectbox("Type", ["credit", "repayment"], index=0 if not parsed or parsed.transaction_type == "credit" else 1)
         description = st.text_input("Description", parsed.description if parsed else "")
-        confirmed = st.form_submit_button("Confirm and save")
+        confirm_col, reject_col = st.columns(2)
+        with confirm_col:
+            confirmed = st.form_submit_button("Confirm and save", type="primary")
+        with reject_col:
+            rejected = st.form_submit_button("Reject and continue")
+    if rejected:
+        st.session_state.pop("voice_transcript", None)
+        st.session_state["voice_pending_event_id"] = None
+        st.session_state["voice_ack_event_id"] = st.session_state.get("voice_last_event_id")
+        st.session_state["voice_status"] = "Rejected — listening continues"
+        st.rerun()
     if confirmed:
         try:
-            customer = get_or_create_customer(db, customer_name)
-            add_transaction(db, customer.id, Decimal(str(amount)), kind, description, transcript)
-            st.success(f"Saved. {customer.name}'s balance is now {format_paise(balance_paise(db, customer.id))}.")
+            with connection_scope(DB_PATH) as db:
+                customer = get_or_create_customer(db, customer_name)
+                add_transaction(db, customer.id, Decimal(str(amount)), kind, description, transcript)
+                current_balance = balance_paise(db, customer.id)
+            st.success(f"Saved. {customer.name}'s balance is now {format_paise(current_balance)}.")
             st.session_state.pop("voice_transcript", None)
+            st.session_state["voice_status"] = "Saved — listening continues"
+            st.session_state["voice_pending_event_id"] = None
+            st.session_state["voice_ack_event_id"] = st.session_state.get("voice_last_event_id")
         except LedgerError as exc:
             st.error(str(exc))
 
@@ -129,17 +173,22 @@ def customers_page() -> None:
         phone = st.text_input("Phone (optional)")
         if st.form_submit_button("Add customer"):
             try:
-                create_customer(db, name, phone)
+                with connection_scope(DB_PATH) as db:
+                    create_customer(db, name, phone)
                 st.success("Customer added.")
             except LedgerError as exc:
                 st.error(str(exc))
     search = st.text_input("Search customers")
-    customers = list_customers(db, search)
+    with connection_scope(DB_PATH) as db:
+        customers = list_customers(db, search)
     for customer in customers:
         st.markdown(f"### {customer.name}")
-        st.caption(f"Outstanding: {format_paise(balance_paise(db, customer.id))}")
+        with connection_scope(DB_PATH) as db:
+            current_balance = balance_paise(db, customer.id)
+            customer_transactions = list_transactions(db, customer_id=customer.id)
+        st.caption(f"Outstanding: {format_paise(current_balance)}")
         with st.expander("View ledger"):
-            for row in list_transactions(db, customer_id=customer.id):
+            for row in customer_transactions:
                 st.write(f"{row.created_at} · {row.transaction_type.title()} · {format_paise(row.amount_paise)} · {row.description}")
 
 
@@ -147,7 +196,8 @@ def transactions_page() -> None:
     st.title("Transactions")
     search = st.text_input("Search ledger")
     kind = st.selectbox("Filter", ["all", "credit", "repayment"])
-    rows = list_transactions(db, search=search, transaction_type=None if kind == "all" else kind)
+    with connection_scope(DB_PATH) as db:
+        rows = list_transactions(db, search=search, transaction_type=None if kind == "all" else kind)
     for row in rows:
         col1, col2, col3 = st.columns([3, 2, 1])
         col1.write(f"**{row.customer_name}** — {row.description or row.transaction_type.title()}")
@@ -160,7 +210,8 @@ def transactions_page() -> None:
             reason = st.text_input("Why is this being corrected?")
             if st.form_submit_button("Create reversal"):
                 try:
-                    reverse_transaction(db, st.session_state.pop("reverse_id"), reason)
+                    with connection_scope(DB_PATH) as db:
+                        reverse_transaction(db, st.session_state.pop("reverse_id"), reason)
                     st.success("Reversal recorded in the audit trail.")
                     st.rerun()
                 except LedgerError as exc:

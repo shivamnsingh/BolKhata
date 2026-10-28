@@ -10,7 +10,8 @@ DEFAULT_BASE_URL = "https://api.vachana.ai"
 ENDPOINT = "/stt/v3"
 API_KEY_HEADER = "X-API-Key-ID"
 ALLOWED_EXTENSIONS = {".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg",
-                      ".flac": "audio/flac", ".aac": "audio/aac", ".m4a": "audio/mp4"}
+                      ".flac": "audio/flac", ".aac": "audio/aac", ".m4a": "audio/mp4",
+                      ".webm": "audio/webm"}
 
 
 class PrismaError(RuntimeError):
@@ -42,7 +43,7 @@ def transcribe(
 ) -> dict[str, Any]:
     path = Path(audio_path)
     if not path.is_file() or path.suffix.lower() not in ALLOWED_EXTENSIONS:
-        raise PrismaError("Choose a supported audio file: WAV, MP3, OGG, FLAC, AAC, or M4A.")
+        raise PrismaError("Choose a supported audio file: WAV, MP3, OGG, FLAC, AAC, M4A, or WEBM.")
     key = api_key or load_api_key()
     if not key:
         raise PrismaError("GNANI_API_KEY is not configured. Add it to your local .env file.")

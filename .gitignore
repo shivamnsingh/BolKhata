@@ -8,6 +8,7 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+node_modules/
 
 # Local data and recordings (use synthetic audio only; do not commit audio)
 *.sqlite3
