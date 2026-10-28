@@ -1,0 +1,17 @@
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Local data and recordings (use synthetic audio only; do not commit audio)
+*.sqlite3
+*.db
+recordings/
+smoke_results/
+exports/
