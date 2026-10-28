@@ -9,7 +9,7 @@ import streamlit.components.v1 as components
 
 _component = components.declare_component(
     "bolkhata_continuous_voice",
-    path=str(Path(__file__).parent / "voice_component_frontend" / "dist"),
+    path=str(Path(__file__).resolve().parent.parent / "voice_component_frontend" / "dist"),
 )
 
 

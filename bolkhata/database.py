@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
 
+from .config import DATABASE_PATH
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS customers (
@@ -33,7 +34,7 @@ CREATE INDEX IF NOT EXISTS idx_transactions_created ON transactions(created_at D
 
 def database_path(path: str | Path | None = None) -> Path:
     """Return a stable absolute path independent of Streamlit's working directory."""
-    configured = path or __import__("os").environ.get("BOLKHATA_DB")
+    configured = path or DATABASE_PATH
     if configured == ":memory:":
         return Path(":memory:")
     return Path(configured).expanduser().resolve() if configured else Path(__file__).resolve().parent / "bolkhata.sqlite3"
