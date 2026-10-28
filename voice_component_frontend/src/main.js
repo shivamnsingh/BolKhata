@@ -19,24 +19,49 @@ let lastAcknowledged = null;
 let inFlightEvent = null;
 const queuedBlobs = [];
 let recorderMimeType = "";
+let componentStatus = "Ready";
 
 function render() {
-  root.innerHTML = `
-    <div style="font-family: sans-serif; color: #173d36">
-      <button id="start" style="background:#123b35;color:white;border:0;border-radius:8px;padding:12px 18px;font-weight:600">Start Listening</button>
-      <button id="stop" style="margin-left:8px;background:#fff;color:#123b35;border:1px solid #123b35;border-radius:8px;padding:12px 18px">Stop Listening</button>
-      <span id="status" style="margin-left:12px">Ready</span>
-      <div style="font-size:12px;margin-top:8px;color:#68756f">The browser keeps listening between utterances. Silence ends a segment; no audio is sent until an utterance is complete.</div>
-    </div>`;
-  root.querySelector("#start").onclick = startListening;
-  root.querySelector("#stop").onclick = stopListening;
-  updateStatus(listening ? "Listening" : "Ready");
+  if (!root.querySelector("#start")) {
+    root.innerHTML = `
+      <div style="font-family: sans-serif; color: #173d36">
+        <button id="start" style="background:#123b35;color:white;border:0;border-radius:8px;padding:12px 18px;font-weight:600">Start Listening</button>
+        <button id="stop" style="margin-left:8px;background:#fff;color:#123b35;border:1px solid #123b35;border-radius:8px;padding:12px 18px">Stop Listening</button>
+        <span id="status" style="margin-left:12px">Ready</span>
+        <div style="font-size:12px;margin-top:8px;color:#68756f">The browser keeps listening between utterances. Silence ends a segment; no audio is sent until an utterance is complete.</div>
+      </div>`;
+    root.querySelector("#start").onclick = startListening;
+    root.querySelector("#stop").onclick = stopListening;
+  }
+  updateStatus(listening ? "Listening" : componentStatus);
   Streamlit.setFrameHeight(105);
 }
 
 function updateStatus(status) {
+  componentStatus = status;
   const element = root.querySelector("#status");
   if (element) element.textContent = status;
+}
+
+async function emitBlob(blob, durationMs) {
+  if (!listening || inFlightEvent || !blob || !blob.size) return;
+  try {
+    const buffer = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+    const eventId = `${Date.now()}-${eventSequence++}`;
+    inFlightEvent = eventId;
+    Streamlit.setComponentValue({
+      event_id: eventId,
+      audio_base64: btoa(binary),
+      mime_type: blob.type || "audio/webm",
+      duration_ms: durationMs
+    });
+    updateStatus("Processing");
+  } catch (error) {
+    updateStatus("Error: audio segment unavailable");
+  }
 }
 
 async function startListening() {
@@ -81,24 +106,12 @@ function startSegment() {
     const durationMs = Math.round(performance.now() - segmentStartedAt);
     if (durationMs >= MIN_SEGMENT_MS && chunks.length) {
       const blob = new Blob(chunks, { type: recorderMimeType });
-      if (inFlightEvent) queuedBlobs.push({ blob, durationMs });
-      else emitBlob(blob, durationMs);
-    }
-
-    async function emitBlob(blob, durationMs) {
-      const buffer = await blob.arrayBuffer();
-      const bytes = new Uint8Array(buffer);
-      let binary = "";
-      bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
-      const eventId = `${Date.now()}-${eventSequence++}`;
-      inFlightEvent = eventId;
-      Streamlit.setComponentValue({
-        event_id: eventId,
-        audio_base64: btoa(binary),
-        mime_type: blob.type || "audio/webm",
-        duration_ms: durationMs
-      });
-      updateStatus("Processing");
+      if (inFlightEvent) {
+        if (queuedBlobs.length < 3) queuedBlobs.push({ blob, durationMs });
+        else updateStatus("Busy — speak after confirmation");
+      } else {
+        emitBlob(blob, durationMs);
+      }
     }
     if (listening) startSegment();
   };
@@ -130,6 +143,8 @@ function detectSpeechBoundary() {
 
 function stopListening() {
   listening = false;
+  queuedBlobs.length = 0;
+  inFlightEvent = null;
   if (recorder && recorder.state === "recording") recorder.stop();
   if (stream) stream.getTracks().forEach((track) => track.stop());
   if (audioContext) audioContext.close();

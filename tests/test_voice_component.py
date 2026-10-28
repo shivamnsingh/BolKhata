@@ -15,3 +15,13 @@ def test_dist_bundle_exists_for_streamlit_component():
     from pathlib import Path
 
     assert (Path(__file__).parents[1] / "voice_component_frontend" / "dist" / "index.html").is_file()
+
+
+def test_voice_source_defines_emitter_at_module_scope_and_limits_queue():
+    from pathlib import Path
+
+    source = (Path(__file__).parents[1] / "voice_component_frontend" / "src" / "main.js").read_text()
+    assert source.count("async function emitBlob") == 1
+    assert source.index("async function emitBlob") < source.index("function startListening")
+    assert "queuedBlobs.length < 3" in source
+    assert "if (!root.querySelector(\"#start\"))" in source
