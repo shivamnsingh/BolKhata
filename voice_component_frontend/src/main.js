@@ -1,25 +1,50 @@
 import { Streamlit } from "streamlit-component-lib";
+import { Downsampler, TARGET_RATE, bytesToBase64, encodeWav } from "./audio.js";
+import { SegmentQueue } from "./queue.js";
+import { Segmenter } from "./segmenter.js";
 
 const root = document.getElementById("root");
-const MIN_SEGMENT_MS = 700;
-const MAX_SEGMENT_MS = 10000;
-const SILENCE_MS = 900;
-const THRESHOLD = 0.035;
+const LOG = "[BolKhata voice]";
+const WORKLET_SOURCE = `
+class BolKhataCapture extends AudioWorkletProcessor {
+  constructor() { super(); this.buffer = new Float32Array(2048); this.length = 0; }
+  process(inputs) {
+    const channel = inputs[0] && inputs[0][0];
+    if (!channel) return true;
+    for (let index = 0; index < channel.length; index += 1) {
+      this.buffer[this.length++] = channel[index];
+      if (this.length === this.buffer.length) { this.port.postMessage(this.buffer.slice(0)); this.length = 0; }
+    }
+    return true;
+  }
+}
+registerProcessor("bolkhata-capture", BolKhataCapture);
+`;
 
-let stream = null;
-let recorder = null;
-let analyser = null;
-let audioContext = null;
-let chunks = [];
-let listening = false;
-let segmentStartedAt = 0;
-let silenceStartedAt = 0;
-let eventSequence = 0;
-let lastAcknowledged = null;
-let inFlightEvent = null;
-const queuedBlobs = [];
-let recorderMimeType = "";
-let componentStatus = "Ready";
+// One audio session at a time. `generation` invalidates every async continuation from an older session.
+let generation = 0;
+let session = null; // { stream, context, node, sink, downsampler, segmenter }
+let starting = false;
+let status = "Ready";
+
+const queue = new SegmentQueue({
+  makeId: () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+  maxQueued: 3,
+  send: (segment) => {
+    console.info(LOG, "state", { state: "PROCESSING", eventId: segment.eventId, queued: queue.length, durationMs: segment.durationMs });
+    setStatus("Processing — confirm or reject the transaction to continue");
+    Streamlit.setComponentValue({
+      event_id: segment.eventId,
+      audio_base64: bytesToBase64(segment.wav),
+      mime_type: "audio/wav",
+      duration_ms: segment.durationMs
+    });
+  },
+  onSendError: (error) => {
+    console.error(LOG, "send failed", error);
+    setStatus("Error: could not send audio; still listening");
+  }
+});
 
 function render() {
   if (!root.querySelector("#start")) {
@@ -33,140 +58,124 @@ function render() {
     root.querySelector("#start").onclick = startListening;
     root.querySelector("#stop").onclick = stopListening;
   }
-  updateStatus(listening ? "Listening" : componentStatus);
+  setStatus(status);
   Streamlit.setFrameHeight(105);
 }
 
-function updateStatus(status) {
-  componentStatus = status;
+function setStatus(text) {
+  status = text;
   const element = root.querySelector("#status");
-  if (element) element.textContent = status;
+  if (element && element.textContent !== text) element.textContent = text;
 }
 
-async function emitBlob(blob, durationMs) {
-  if (!listening || inFlightEvent || !blob || !blob.size) return;
+function onSegment(segment) {
+  let wav;
   try {
-    const buffer = await blob.arrayBuffer();
-    const bytes = new Uint8Array(buffer);
-    let binary = "";
-    bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
-    const eventId = `${Date.now()}-${eventSequence++}`;
-    inFlightEvent = eventId;
-    Streamlit.setComponentValue({
-      event_id: eventId,
-      audio_base64: btoa(binary),
-      mime_type: blob.type || "audio/webm",
-      duration_ms: durationMs
-    });
-    updateStatus("Processing");
+    wav = encodeWav(segment.samples, TARGET_RATE);
   } catch (error) {
-    updateStatus("Error: audio segment unavailable");
+    console.error(LOG, "WAV encoding failed", error);
+    setStatus("Error: could not encode audio; still listening");
+    return;
   }
+  const accepted = queue.enqueue({ wav, durationMs: segment.durationMs });
+  console.info(LOG, "segment captured", {
+    durationMs: segment.durationMs,
+    speechMs: segment.speechMs,
+    reason: segment.reason,
+    sizeBytes: wav.length,
+    accepted,
+    queued: queue.length,
+    inFlightEvent: queue.inFlight
+  });
+  if (!accepted) setStatus("Busy — speak after confirmation");
+  else if (!queue.inFlight && session) setStatus("Listening");
 }
 
 async function startListening() {
-  if (listening) return;
-  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-    updateStatus("Unsupported browser: use Chrome or Edge");
+  if (session || starting) return;
+  if (!navigator.mediaDevices?.getUserMedia || !window.AudioContext || !window.AudioWorkletNode) {
+    setStatus("Unsupported browser: use Chrome or Edge");
     return;
   }
+  starting = true;
+  const myGeneration = ++generation;
+  let stream = null;
+  let context = null;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    audioContext = new AudioContext();
-    const source = audioContext.createMediaStreamSource(stream);
-    analyser = audioContext.createAnalyser();
-    analyser.fftSize = 1024;
-    source.connect(analyser);
-    listening = true;
-    startSegment();
+    context = new AudioContext(); // created inside the click handler so it is allowed to run
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+    if (myGeneration !== generation) throw new Error("cancelled");
+    await context.resume();
+    const moduleUrl = URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: "application/javascript" }));
+    try {
+      await context.audioWorklet.addModule(moduleUrl);
+    } finally {
+      URL.revokeObjectURL(moduleUrl);
+    }
+    if (myGeneration !== generation) throw new Error("cancelled");
+    const source = context.createMediaStreamSource(stream);
+    const node = new AudioWorkletNode(context, "bolkhata-capture", { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
+    const sink = context.createGain();
+    sink.gain.value = 0; // keeps the graph pulled without playing the microphone back
+    const downsampler = new Downsampler(context.sampleRate, TARGET_RATE);
+    const segmenter = new Segmenter({ sampleRate: TARGET_RATE }, {
+      onSpeechStart: () => { if (!queue.inFlight) setStatus("Hearing you…"); },
+      onDiscard: (info) => console.info(LOG, "noise discarded", info),
+      onSegment
+    });
+    node.port.onmessage = (event) => {
+      if (myGeneration !== generation) return;
+      segmenter.push(downsampler.push(event.data));
+    };
+    source.connect(node);
+    node.connect(sink);
+    sink.connect(context.destination);
+    session = { stream, context, node, sink, source, segmenter };
+    console.info(LOG, "audio session started", { contextRate: context.sampleRate, targetRate: TARGET_RATE });
+    setStatus(queue.inFlight ? status : "Listening");
   } catch (error) {
-    updateStatus(error?.name === "NotAllowedError" ? "Microphone permission denied" : "Microphone unavailable");
+    releaseAudio({ stream, context });
+    if (error?.message !== "cancelled") {
+      console.error(LOG, "start failed", error);
+      setStatus(error?.name === "NotAllowedError" ? "Microphone permission denied" : "Microphone unavailable");
+    }
+  } finally {
+    starting = false;
   }
 }
 
-function startSegment() {
-  if (!listening || !stream) return;
-  chunks = [];
-  segmentStartedAt = performance.now();
-  silenceStartedAt = 0;
-  const supportedMime = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"]
-    .find((mime) => MediaRecorder.isTypeSupported(mime));
-  try {
-    recorder = supportedMime ? new MediaRecorder(stream, { mimeType: supportedMime }) : new MediaRecorder(stream);
-    recorderMimeType = recorder.mimeType || supportedMime || "audio/webm";
-  } catch (error) {
-    updateStatus("This browser cannot encode microphone audio");
-    listening = false;
-    return;
-  }
-  recorder.ondataavailable = (event) => {
-    if (event.data.size) chunks.push(event.data);
-  };
-  recorder.onstop = async () => {
-    const durationMs = Math.round(performance.now() - segmentStartedAt);
-    if (durationMs >= MIN_SEGMENT_MS && chunks.length) {
-      const blob = new Blob(chunks, { type: recorderMimeType });
-      if (inFlightEvent) {
-        if (queuedBlobs.length < 3) queuedBlobs.push({ blob, durationMs });
-        else updateStatus("Busy — speak after confirmation");
-      } else {
-        emitBlob(blob, durationMs);
-      }
-    }
-    if (listening) startSegment();
-  };
-  recorder.start();
-  updateStatus("Listening");
-  detectSpeechBoundary();
-}
-
-function detectSpeechBoundary() {
-  if (!listening || !recorder || recorder.state !== "recording") return;
-  const values = new Uint8Array(analyser.fftSize);
-  analyser.getByteTimeDomainData(values);
-  let sum = 0;
-  values.forEach((value) => { const normalized = (value - 128) / 128; sum += normalized * normalized; });
-  const rms = Math.sqrt(sum / values.length);
-  const elapsed = performance.now() - segmentStartedAt;
-  if (rms < THRESHOLD) {
-    if (!silenceStartedAt) silenceStartedAt = performance.now();
-    if (elapsed >= MIN_SEGMENT_MS && performance.now() - silenceStartedAt >= SILENCE_MS) {
-      recorder.stop();
-      return;
-    }
-  } else {
-    silenceStartedAt = 0;
-  }
-  if (elapsed >= MAX_SEGMENT_MS) recorder.stop();
-  else requestAnimationFrame(detectSpeechBoundary);
+function releaseAudio(resources) {
+  const { stream, context, node, sink, source } = resources;
+  try { source?.disconnect(); } catch (error) { /* already disconnected */ }
+  try { node?.disconnect(); } catch (error) { /* already disconnected */ }
+  try { sink?.disconnect(); } catch (error) { /* already disconnected */ }
+  if (node) node.port.onmessage = null;
+  if (stream) stream.getTracks().forEach((track) => track.stop());
+  if (context && context.state !== "closed") context.close().catch(() => {});
 }
 
 function stopListening() {
-  listening = false;
-  queuedBlobs.length = 0;
-  inFlightEvent = null;
-  if (recorder && recorder.state === "recording") recorder.stop();
-  if (stream) stream.getTracks().forEach((track) => track.stop());
-  if (audioContext) audioContext.close();
-  stream = null;
-  recorder = null;
-  analyser = null;
-  audioContext = null;
-  updateStatus("Stopped");
+  generation += 1; // invalidates in-flight async work from the stopped session
+  const current = session;
+  session = null;
+  starting = false;
+  if (current) {
+    current.segmenter.reset(); // an unfinished utterance is discarded, never sent after Stop
+    releaseAudio(current);
+  }
+  queue.clear();
+  setStatus("Stopped");
+  console.info(LOG, "stopped; microphone released");
 }
 
 Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, (event) => {
-  const data = event.detail;
-  const ack = data?.args?.ack_event_id;
-  if (ack && ack !== lastAcknowledged) {
-    lastAcknowledged = ack;
-    if (ack === inFlightEvent) {
-      inFlightEvent = null;
-      const next = queuedBlobs.shift();
-      if (next) emitBlob(next.blob, next.durationMs);
-    }
+  const ack = event.detail?.args?.ack_event_id;
+  if (queue.ack(ack)) {
+    console.info(LOG, "state", { state: "ACKNOWLEDGED", eventId: ack, queued: queue.length, inFlightEvent: queue.inFlight });
+    if (!queue.inFlight) setStatus(session ? "Listening" : "Stopped");
   }
   render();
 });
+window.addEventListener("pagehide", () => { if (session) stopListening(); });
 Streamlit.setComponentReady();
 Streamlit.setFrameHeight(105);

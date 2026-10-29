@@ -14,8 +14,8 @@ and type before anything is written to the ledger.
 - Hindi numeric and amount-word parsing, including credit and repayment examples.
 - Gnani Prisma v3 transcription through the documented `X-API-Key-ID` header.
 - A local browser component that keeps the microphone open, detects silence
-  boundaries, queues utterances in order, and pauses delivery until each
-  transaction is confirmed or rejected.
+  boundaries, encodes each utterance as real 16 kHz mono WAV, queues utterances
+  in order, and pauses delivery until each transaction is confirmed or rejected.
 - Confirmation-before-save flow in Streamlit.
 - Searchable customers and transactions.
 - Reversal records for corrections; the original row is never silently deleted.
@@ -45,13 +45,25 @@ Run tests:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Build the continuous voice component after installing Node.js:
+Build the continuous voice component after installing Node.js. Streamlit serves
+`voice_component_frontend/dist`, so rebuild after any change under `src/`:
 
 ```powershell
 Set-Location voice_component_frontend
 npm ci
+npm test
 npm run build
 Set-Location ..
+```
+
+Optional real-browser test (headless Chromium, fake microphone, mocked Gnani — no
+API key and no credits are used):
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install playwright
+.\.venv\Scripts\python.exe -m playwright install chromium
+$env:BOLKHATA_E2E = "1"
+.\.venv\Scripts\python.exe -m pytest tests\e2e -q
 ```
 
 The database is the existing root-level `bolkhata.sqlite3`, resolved by
@@ -70,7 +82,11 @@ bolkhata/                      Application package
   prisma_client.py             Server-side Gnani API client
   voice_component.py           Streamlit component bridge
   ui/                          Page renderers and styles
-voice_component_frontend/      Browser MediaRecorder component
+voice_component_frontend/      Browser microphone component (AudioWorklet PCM capture)
+  src/segmenter.js             Silence/utterance segmentation (pure, unit-tested)
+  src/queue.js                 One-in-flight queue with explicit acknowledgement
+  src/audio.js                 Downsampling and WAV encoding
+bolkhata/voice_workflow.py     Confirm / reject / acknowledge state machine (unit-tested)
 scripts/smoke_test_prisma.py   Deliberate live API smoke test
 tests/                         Unit, persistence, threading, and protocol tests
 ```
@@ -79,20 +95,29 @@ tests/                         Unit, persistence, threading, and protocol tests
 
 1. Open **Voice Entry** and click **Start Listening** once. Upload remains a
    fallback.
-2. Click **Transcribe with Gnani Prisma**. This is the only UI action that
-   sends a paid request.
-3. Review or edit the extracted fields.
-4. Click **Confirm and save**.
+2. Speak one utterance and pause. The component converts the browser recording
+   to 16 kHz mono WAV and submits one completed segment to Prisma.
+3. Review or edit the extracted fields, then click **Confirm and save** or
+   **Reject and continue**. Listening resumes without another Start click.
+4. Click **Stop Listening** when finished. No transaction is saved before
+   confirmation.
 
 The continuous component runs in the browser while the tab remains open. It
-uses `MediaRecorder` and local RMS silence detection (0.7–10 second segments,
-approximately 0.9 seconds of silence). Completed segments are sent one at a
-time to Python; later segments stay queued until the current transaction is
-confirmed or rejected. The backend alone calls Prisma, so the API key never
-reaches browser JavaScript. Chrome/Edge are recommended; browsers without
-`getUserMedia` or `MediaRecorder` receive an explicit unsupported-browser
-state. The manual upload path remains available, including WEBM files produced
-by browser MediaRecorder.
+captures raw microphone audio with an `AudioWorklet`, downsamples it to 16 kHz
+mono and segments it locally: a segment starts only when speech is detected,
+ends after about 0.9 seconds of silence, discards clicks shorter than 0.25
+seconds, and is force-split at 25 seconds (the documented Gnani limit is 30
+seconds, also enforced server-side). Each segment is encoded as a real PCM WAV
+file in the browser, so no codec conversion is needed. Segments are sent one at
+a time; the browser releases the next one only when Python acknowledges the
+current event, which happens after the transaction is saved (database commit
+succeeded), rejected, or failed. Segments spoken during review wait in a queue
+of up to three. Each utterance has a stable idempotency key (`voice:<event id>`),
+so it can be saved at most once. The backend alone calls Prisma, so the API key
+never reaches browser JavaScript. Use Chrome or Edge (`AudioWorklet` +
+`getUserMedia`, served from `localhost` or HTTPS). The manual upload path
+remains available, including WEBM files, which are converted to WAV with
+`ffmpeg` (a hard 30 second timeout; install ffmpeg to use WEBM uploads).
 
 Supported examples:
 

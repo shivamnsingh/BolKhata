@@ -32,3 +32,22 @@ def test_rejects_unsafe_or_incomplete_transcript(text):
 def test_rejects_ambiguous_type():
     with pytest.raises(ParseError):
         parse_transaction("रमेश के खाते में 70 रुपये दर्ज करो।")
+
+
+def test_parses_roman_hinglish_credit_from_acceptance_flow():
+    parsed = parse_transaction("Ramesh ke khate mein 70 rupaye udhaar likh do.")
+    assert (parsed.customer_name, parsed.amount, parsed.transaction_type) == ("Ramesh", Decimal("70"), "credit")
+
+
+def test_parses_roman_hinglish_repayment_from_acceptance_flow():
+    parsed = parse_transaction("Suresh ne 100 rupaye de diye.")
+    assert (parsed.customer_name, parsed.amount, parsed.transaction_type) == ("Suresh", Decimal("100"), "repayment")
+
+
+def test_roman_transcript_without_amount_is_rejected():
+    with pytest.raises(ParseError):
+        parse_transaction("Ramesh ke khate mein udhaar likh do.")
+
+
+def test_roman_number_word_before_currency_unit_still_parses():
+    assert parse_transaction("Ramesh ke khate mein sattar rupaye udhaar likh do").amount == Decimal("70")

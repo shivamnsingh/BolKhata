@@ -1,7 +1,9 @@
 {
   "private": true,
+  "type": "module",
   "scripts": {
-    "build": "vite build"
+    "build": "vite build",
+    "test": "node --test test/frontend.test.js"
   },
   "dependencies": {
     "streamlit-component-lib": "^2.0.0"

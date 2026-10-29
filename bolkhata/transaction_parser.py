@@ -31,8 +31,9 @@ NUMBER_WORDS = {
     "एकशे": 100, "पन्नास": 50, "सत्तर": 70, "शंभर": 100,
 }
 AMOUNT_UNITS = {"रुपये", "रुपया", "रुपए", "रुपय", "rs", "inr", "rupees", "rupee", "rupaye", "rupay"}
-REPAYMENT_WORDS = ("वापस", "जमा", "चुकता", "भुगतान", "दिए", "दिये", "दिया", "returned", "paid", "jama", "wapas")
-CREDIT_WORDS = ("उधार", "लिख", "देना", "लेना", "credit", "borrow", "udhaar")
+REPAYMENT_WORDS = ("वापस", "जमा", "चुकता", "भुगतान", "दिए", "दिये", "दिया", "returned", "paid", "jama", "wapas",
+                   "diye", "diya", "chukta", "chukaye")
+CREDIT_WORDS = ("उधार", "लिख", "देना", "लेना", "credit", "borrow", "udhaar", "udhar", "likh")
 
 
 def _clean(text: str) -> str:
@@ -46,6 +47,9 @@ def _extract_amount(text: str) -> Decimal:
     tokens = re.findall(r"[\w\u0900-\u097F]+", text.lower())
     for index, token in enumerate(tokens):
         if token in NUMBER_WORDS:
+            # Roman words such as "do" (2) are everyday verbs ("likh do"); count them only before a currency unit.
+            if token.isascii() and not (index + 1 < len(tokens) and tokens[index + 1] in AMOUNT_UNITS):
+                continue
             value = NUMBER_WORDS[token]
             if index + 1 < len(tokens) and tokens[index + 1] in NUMBER_WORDS and value < 100:
                 value += NUMBER_WORDS[tokens[index + 1]]
@@ -57,6 +61,8 @@ def _extract_customer(text: str) -> str:
     patterns = (
         r"^\s*(.+?)\s+के\s+खाते",
         r"^\s*(.+?)\s+ने\s+.+?(?:वापस|जमा|दिए|दिये|दिया)",
+        r"^\s*(.+?)\s+ke\s+(?:khate|khaate|account)",
+        r"^\s*(.+?)\s+ne\s+.+?(?:wapas|jama|diye|diya|chukta|chukaye|paid|returned)",
         r"^\s*(.+?)\s+(?:account|ke account)",
     )
     for pattern in patterns:
@@ -81,5 +87,5 @@ def parse_transaction(text: str) -> ParsedTransaction:
     if amount <= 0:
         raise ParseError("Amount must be greater than zero.")
     customer = _extract_customer(clean)
-    description = re.sub(r"^\s*.*?(?:खाते|account)", "", clean, count=1, flags=re.IGNORECASE).strip(" .,।")
+    description = re.sub(r"^\s*.*?(?:खाते|khate|khaate|account)", "", clean, count=1, flags=re.IGNORECASE).strip(" .,।")
     return ParsedTransaction(customer, amount, "repayment" if has_repayment else "credit", description)
